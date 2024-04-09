@@ -1,0 +1,67 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#define VULKAN 100
+
+#include "host_device.h"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(push_constant) uniform _PushConstant {
+    vec4 data;
+}pushData;
+
+layout(set = 0, binding = 0,r32f) uniform image3D weight;
+layout(set = 0, binding = 1) coherent buffer _IndexArray
+{
+    uint idx[];
+}cube_config;
+
+layout(set = 0, binding = 2) coherent buffer _CountArray
+{
+    ivec2 count[];
+}countBuf;
+
+#include "water_sim_utils.glsl"
+#include "marching_cube_table.glsl"
+
+void main()
+{
+    ivec3 gridCoord = ivec3(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y,gl_GlobalInvocationID.z);
+    int grid_size = int(pushData.data.y);
+
+    if(gridCoord.x >= (grid_size - 1) || gridCoord.y >= (grid_size - 1) || gridCoord.z >= (grid_size - 1))
+    {
+        return;
+    }
+
+    int bitmask = 0;
+
+    //https://polycoding.net/marching-cubes/part-1/
+    const ivec3 cornerOffsets[8] = {
+        {0,1,1}, //4
+        {1,1,1}, //5
+        {1,1,0}, //6
+        {0,1,0}, //7
+        {0,0,1}, //0
+        {1,0,1}, //1
+        {1,0,0}, //2
+        {0,0,0}, //3
+    };
+
+    for(int i = 0; i < 8; i ++)
+    {
+        if(imageLoad(weight,gridCoord + cornerOffsets[i]).r < 1.5)
+        {
+            bitmask |= 1; 
+        }
+        bitmask <<= 1; 
+    }
+
+    bitmask >>= 1;
+
+    int idx_of_cube = gridCoord.z * (grid_size - 1)*(grid_size - 1)  + gridCoord.y * (grid_size - 1) + gridCoord.x;
+    cube_config.idx[idx_of_cube] = bitmask;
+    countBuf.count[idx_of_cube].x = num_table[bitmask].x;//vertex count
+    countBuf.count[idx_of_cube].y = num_table[bitmask].y;//index count
+}

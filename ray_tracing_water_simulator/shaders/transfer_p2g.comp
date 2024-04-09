@@ -1,0 +1,97 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_atomic_float : require
+#define VULKAN 100
+
+#include "host_device.h"
+
+layout(local_size_x = 16, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) readonly buffer _ParticleArray
+{
+    PICParticle p[];
+}particles;
+
+layout(set = 1, binding = 0,r32f) uniform image3D u_x;
+layout(set = 1, binding = 1,r32f) uniform image3D u_y;
+layout(set = 1, binding = 2,r32f) uniform image3D u_z;
+layout(set = 1, binding = 3,r32f) uniform readonly coherent image3D pressure;
+layout(set = 1, binding = 4,r32f) uniform image3D weight;
+layout(set = 1, binding = 5,r32f) uniform image3D marker;
+
+layout(push_constant) uniform _PushConstant {
+    vec4 data;
+}pushData;
+
+layout (constant_id = 0) const int GRID = 0;
+
+#include "water_sim_utils.glsl"
+
+void main()
+{
+  // Calculate global indices
+    uint globalIndexX = gl_GlobalInvocationID.x;
+    uint index = globalIndexX;
+
+    PICParticle p = particles.p[index];
+
+    vec3 pos = p.position.xyz;
+    vec3 v = p.velocity.xyz;
+
+    //transfer from particle to grid
+    vec3 gridCoord = get_grid_coord(pos,int(pushData.data.y));
+    ivec3 center = ivec3(round(gridCoord));
+
+    if(GRID == 4)
+    {
+        imageAtomicAdd(marker,center,1.0);
+    }else{
+        const int NEIGHBOR_COUNT = 27;
+        ivec3 cells[NEIGHBOR_COUNT];
+        int n = 0;
+        for(int i = -1; i < 2; i ++)
+        {
+            for(int j = -1; j < 2; j++)
+            {
+                for(int k = -1; k < 2; k++)
+                {
+                    ivec3 cell = center + ivec3(i,j,k);
+                    cells[n] = cell;
+                    n++;
+                }
+            }
+        }
+
+        if(GRID == 0)
+        {
+            for(int i = 0; i < NEIGHBOR_COUNT; i++)
+            {
+                vec3 offset = abs(gridCoord - cells[i]);
+                float w = compute_weight(offset.x) + compute_weight(offset.y)  + compute_weight(offset.z);
+                imageAtomicAdd(weight, cells[i],w);
+            }
+        }
+        if(GRID == 1)
+        {
+            for(int i = 0; i < NEIGHBOR_COUNT; i++)
+            {
+                imageAtomicAdd(u_x, cells[i], v.x);
+            }
+        }
+        if(GRID == 2)
+        {
+            for(int i = 0; i < NEIGHBOR_COUNT; i++)
+            {
+                imageAtomicAdd(u_y, cells[i], v.y);
+            }
+        }
+        if(GRID == 3)
+        {
+            for(int i = 0; i < NEIGHBOR_COUNT; i++)
+            {
+                imageAtomicAdd(u_z, cells[i], v.z);
+            }
+        }
+    }
+}

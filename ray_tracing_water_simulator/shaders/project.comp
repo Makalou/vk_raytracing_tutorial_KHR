@@ -1,0 +1,60 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#define VULKAN 100
+
+#include "host_device.h"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) buffer _ParticleArray
+{
+    PICParticle p[];
+}particles;
+
+layout(push_constant) uniform _PushConstant {
+    vec4 data;
+}pushData;
+
+layout(set = 1, binding = 0,r32f) uniform image3D u_x;
+layout(set = 1, binding = 1,r32f) uniform image3D u_y;
+layout(set = 1, binding = 2,r32f) uniform image3D u_z;
+layout(set = 1, binding = 3,r32f) uniform readonly image3D pressure;
+layout(set = 1, binding = 4,r32f) uniform readonly image3D weight;
+layout(set = 1, binding = 5,r32f) uniform readonly image3D marker;
+
+#include "water_sim_utils.glsl"
+
+void main()
+{
+    ivec3 index = ivec3(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y,gl_GlobalInvocationID.z);
+    int grid_size = int(pushData.data.y);
+    float dx = 10.0 / grid_size;
+    float dt = pushData.data.x;
+
+    if(imageLoad(marker,index).r > 0)
+    {
+        // is water cell
+        float ux = imageLoad(u_x,index).r;
+        float uy = imageLoad(u_y,index).r;
+        float uz = imageLoad(u_z,index).r;
+
+        float p = imageLoad(pressure,index).r;
+
+        float px1 = imageLoad(pressure,index + ivec3(1,0,0)).r;
+        float py1 = imageLoad(pressure,index + ivec3(0,1,0)).r;
+        float pz1 = imageLoad(pressure,index + ivec3(0,0,1)).r;
+
+        dt *= 0.01;
+        float rho = 1.0;
+        float scale = dt/(rho * 2.0 * dx);
+
+        ux -= scale * (px1 - p);
+        uy -= scale * (py1 - p);
+        uz -= scale * (pz1 - p);
+
+        imageStore(u_x,index,vec4(ux));
+        imageStore(u_y,index,vec4(uy));
+        imageStore(u_z,index,vec4(uz));
+    }
+}

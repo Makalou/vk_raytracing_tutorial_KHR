@@ -1,0 +1,154 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#define VULKAN 100
+
+#include "host_device.h"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) buffer _ParticleArray
+{
+    PICParticle p[];
+}particles;
+
+layout(push_constant) uniform _PushConstant {
+    vec4 data;
+}pushData;
+
+layout(set = 1, binding = 0,r32f) uniform readonly image3D u_x;
+layout(set = 1, binding = 1,r32f) uniform readonly image3D u_y;
+layout(set = 1, binding = 2,r32f) uniform readonly image3D u_z;
+layout(set = 1, binding = 3,r32f) uniform image3D pressure;
+layout(set = 1, binding = 4,r32f) uniform readonly image3D weight;
+layout(set = 1, binding = 5,r32f) uniform readonly image3D marker;
+
+#include "water_sim_utils.glsl"
+
+bool isSolid(ivec3 cell,int grid_size)
+{
+    return cell.x < 0 || cell.x >= grid_size || 
+    cell.y < 0 || cell.y >= grid_size || 
+    cell.z <0 || cell.z >= grid_size; 
+}
+
+bool isWater(ivec3 cell)
+{
+    return imageLoad(marker,cell).r > 0;
+}
+
+void main()
+{
+    //Use jacobi iteration
+    ivec3 index = ivec3(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y,gl_GlobalInvocationID.z);
+    if(!isWater(index))
+    {
+        return;
+    }
+
+    int grid_size = int(pushData.data.y);
+    float dt = pushData.data.x;
+    float dx = 10.0 / (grid_size);
+
+    float p1 = 0;  float p2 = 0; float p3 = 0; 
+    float p4 = 0; float p5 = 0; float p6 = 0;
+
+    float s1 = 1.0; float s2 = 1.0; float s3 = 1.0; 
+    float s4 = 1.0; float s5 = 1.0; float s6 = 1.0;
+
+    float u1 = 0.0; float u2 = 0.0; float u3 = 0.0; 
+    float u4 = 0.0; float u5 = 0.0; float u6 = 0.0; 
+
+    ivec3 left = index + ivec3(1,0,0);
+    ivec3 right = index - ivec3(1,0,0);
+    ivec3 up = index + ivec3(0,1,0);
+    ivec3 down = index - ivec3(0,1,0);
+    ivec3 front = index + ivec3(0,0,1);
+    ivec3 end = index - ivec3(0,0,1);
+    
+    u1 = imageLoad(u_x,index).r;
+    u3 = imageLoad(u_y,index).r;
+    u5 = imageLoad(u_z,index).r;
+
+    if(isSolid(left,grid_size))
+    {
+        s1 = 0;
+    }else{
+        if(isWater(left))
+        {
+            p1 = imageLoad(pressure,left).r;
+        }
+    }
+    if(isSolid(right,grid_size))
+    {
+        s2 = 0;
+    }else{
+        if(isWater(right))
+        {
+            u2 = imageLoad(u_x,right).r;
+            p2 = imageLoad(pressure,right).r;
+        }else{
+            u2 = u1;
+        }
+    }
+
+    if(isSolid(up,grid_size))
+    {
+        s3 = 0;
+    }else{
+        if(isWater(up))
+        {
+            p3 = imageLoad(pressure,up).r;
+        }
+    }
+    if(isSolid(down,grid_size))
+    {
+        s4 = 0;
+    }else{
+        if(isWater(down))
+        {
+            u4 = imageLoad(u_y,down).r;
+            p4 = imageLoad(pressure,down).r;
+        }else{
+            u4 = u3;
+        }
+    }
+
+    if(isSolid(front,grid_size))
+    {
+        s5 = 0;
+    }else{
+        if(isWater(front))
+        {
+            p5 = imageLoad(pressure,front).r;
+        }
+    }
+    if(isSolid(end,grid_size))
+    {
+        s6 = 0;
+    }else{
+        if(isWater(end))
+        {
+            u6 = imageLoad(u_z,end).r;
+            p6 = imageLoad(pressure,end).r;
+        }else{
+            u6 = u5;
+        }
+    }
+    
+    float s = s1 + s2 + s3 + s4 + s5 +s6;
+    float p = s1 * p1 + s2 * p2 + s3 * p3 + s4 *p4 + s5 * p5 + s6 * p6;
+    float div_x = (u1 - u2);
+    float div_y = (u3 - u4);
+    float div_z = (u5 - u6);
+    //if(abs(div_x) < 1.0) div_x = 0;
+    //if(abs(div_y) < 1.0) div_y = 0;
+    //if(abs(div_z) < 1.0) div_z = 0;
+    float div = div_x + div_y + div_z;
+    //jacobi iteration
+    dt *= 0.01;
+    float rho = 1.0;
+    float scale = (rho * dx)/dt;
+    p = (p - scale * div) / s;
+    imageStore(pressure,index,vec4(p));
+}

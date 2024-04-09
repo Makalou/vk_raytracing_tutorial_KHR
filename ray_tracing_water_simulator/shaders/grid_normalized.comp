@@ -1,0 +1,44 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
+#define VULKAN 100
+
+#include "host_device.h"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) buffer _ParticleArray
+{
+    PICParticle p[];
+}particles;
+
+layout(set = 1, binding = 0,r32f) uniform image3D u_x;
+layout(set = 1, binding = 1,r32f) uniform image3D u_y;
+layout(set = 1, binding = 2,r32f) uniform image3D u_z;
+layout(set = 1, binding = 3,r32f) uniform readonly image3D pressure;
+layout(set = 1, binding = 4,r32f) uniform readonly image3D weight;
+layout(set = 1, binding = 5,r32f) uniform readonly image3D marker;
+
+#include "water_sim_utils.glsl"
+
+layout(push_constant) uniform _PushConstant {
+    vec4 data;
+}pushData;
+
+void main()
+{
+    ivec3 grid_coord = ivec3(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y,gl_GlobalInvocationID.z);
+    float w = imageLoad(weight, grid_coord).r;
+    if(w > 0)
+    {
+        float normalized_u_x = imageLoad(u_x, grid_coord).r/w;
+        imageStore(u_x, grid_coord, vec4(normalized_u_x));
+
+        float normalized_u_y = imageLoad(u_y, grid_coord).r/w;
+        imageStore(u_y, grid_coord, vec4(normalized_u_y));
+
+        float normalized_u_z = imageLoad(u_z, grid_coord).r/w;
+        imageStore(u_z, grid_coord, vec4(normalized_u_z));
+    }
+}

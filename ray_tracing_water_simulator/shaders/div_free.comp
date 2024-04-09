@@ -1,0 +1,130 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#define VULKAN 100
+
+#include "host_device.h"
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+layout(set = 0, binding = 0) buffer _ParticleArray
+{
+    PICParticle p[];
+}particles;
+
+layout(push_constant) uniform _PushConstant {
+    vec4 data;
+}pushData;
+
+
+layout(set = 1, binding = 0,r32f) uniform image3D u_x;
+layout(set = 1, binding = 1,r32f) uniform image3D u_y;
+layout(set = 1, binding = 2,r32f) uniform image3D u_z;
+layout(set = 1, binding = 3,r32f) uniform image3D pressure;
+layout(set = 1, binding = 4,r32f) uniform image3D weight;
+layout(set = 1, binding = 5,r32f) uniform image3D marker;
+
+#include "water_sim_utils.glsl"
+
+void main()
+{
+    //Use Red Black Guassian Sediel iteration
+    int rb = int(pushData.data.z);
+    ivec3 ux_grid_coord = ivec3(2* gl_GlobalInvocationID.x + rb, gl_GlobalInvocationID.y,gl_GlobalInvocationID.z);
+    ivec3 uy_grid_coord = ivec3(gl_GlobalInvocationID.y, 2* gl_GlobalInvocationID.x + rb,gl_GlobalInvocationID.z);
+    ivec3 uz_grid_coord = ivec3(gl_GlobalInvocationID.y, gl_GlobalInvocationID.z, 2 * gl_GlobalInvocationID.x + rb);
+
+    int grid_size = int(pushData.data.y);
+
+    if(imageLoad(marker,ivec3(ux_grid_coord.x,uy_grid_coord.y,uz_grid_coord.z)).r > 0)
+    {
+        //water cell
+        float ux0, ux1, uy0, uy1, uz0, uz1;
+        float sx0, sx1, sy0, sy1, sz0, sz1;
+        ux1 = imageLoad(u_x,ux_grid_coord).r;
+        uy1 = imageLoad(u_y,uy_grid_coord).r;
+        uz1 = imageLoad(u_z,uz_grid_coord).r;
+
+        if(ux_grid_coord.x == 0)
+        {
+            ux0 = 0;
+            sx0 = 0;
+        }else{
+            if(imageLoad(marker,ux_grid_coord - ivec3(1,0,0)).r > 0)
+            {
+                //water 
+                ux0 = imageLoad(u_x,ux_grid_coord - ivec3(1,0,0)).r;
+                sx0 = 1;
+            }else{
+                //air
+                ux0 = ux1;
+                sx0 = 0;
+            }
+        }
+
+        if(uy_grid_coord.y == 0)
+        {
+            uy0 = 0;
+            sy0 = 0;
+        }else{
+            if(imageLoad(marker,uy_grid_coord - ivec3(0,1,0)).r > 0)
+            {
+                //water 
+                uy1 = imageLoad(u_y,uy_grid_coord - ivec3(0,1,0)).r;
+                sy1 = 1;
+            }else{
+                //air
+                uy0 = uy1;
+                sy0 = 0;
+            }
+        }
+
+        if(uz_grid_coord.z == 0)
+        {
+            uz1 = 0;
+            sz1 = 0;
+        }else{
+            if(imageLoad(marker,uz_grid_coord - ivec3(0,0,1)).r > 0)
+            {
+                //water 
+                uz0 = imageLoad(u_z,uz_grid_coord - ivec3(0,0,1)).r;
+                sz0 = 1;
+            }else{
+                //air
+                uz0 = uz1;
+                sz0 = 0;
+            }
+        }
+
+        sx1 = (ux_grid_coord.x == grid_size - 1) ? 0 : 1;
+        sy1 = (uy_grid_coord.y == grid_size - 1) ? 0 : 1;
+        sz1 = (uz_grid_coord.z == grid_size - 1) ? 0 : 1;
+
+        float d = 1.9 * (ux1 - ux0 + uy1 - uy0 + uz1 - uz0);
+        float s = sx0 + sx1 + sy0 + sy1 + sz0 + sz1;
+
+        ux0 = ux0 + d * (sx0/s);
+        ux1 = ux1 - d * (sx1/s);
+        uy0 = uy0 + d * (sy0/s);
+        uy1 = uy1 - d * (sy1/s);
+        uz0 = uz0 + d * (sz0/s);
+        uz1 = uz1 - d * (sz1/s);
+
+        imageStore(u_x,ux_grid_coord,vec4(ux0));
+        imageStore(u_y,uy_grid_coord,vec4(uy0));
+        imageStore(u_z,uz_grid_coord,vec4(uz0));
+
+        if(ux_grid_coord.x < grid_size - 1)
+        {
+            imageStore(u_x,ux_grid_coord - ivec3(1,0,0),vec4(ux1));
+        }
+        if(uy_grid_coord.y < grid_size - 1)
+        {
+            imageStore(u_y,uy_grid_coord - ivec3(0,1,0),vec4(uy1));
+        }
+        if(uz_grid_coord.z < grid_size - 1)
+        {
+            imageStore(u_z,uz_grid_coord - ivec3(0,0,1),vec4(uz1));
+        }
+    }
+}

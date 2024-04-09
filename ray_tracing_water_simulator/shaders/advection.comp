@@ -1,0 +1,104 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#define VULKAN 100
+
+#include "host_device.h"
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer _ParticleArray
+{
+    PICParticle p[];
+}particles;
+
+layout(set = 1, binding = 0,r32f) uniform readonly image3D u_x;
+layout(set = 1, binding = 1,r32f) uniform readonly image3D u_y;
+layout(set = 1, binding = 2,r32f) uniform readonly image3D u_z;
+layout(set = 1, binding = 3,r32f) uniform readonly image3D pressure;
+layout(set = 1, binding = 4,r32f) uniform readonly image3D weight;
+layout(set = 1, binding = 5,r32f) uniform readonly image3D marker;
+
+layout(push_constant) uniform _PushConstant {
+    vec4 data;
+}pushData;
+
+#include "water_sim_utils.glsl"
+
+void main()
+{
+  // Calculate global indices
+    uint index = gl_GlobalInvocationID.x;
+    vec3 pos = particles.p[index].position.xyz;
+    vec3 v = vec3(0.0);
+
+    // transfer from grid to particle
+    // the velocity on the grid should be divergence free
+    vec3 gridCoord = get_grid_coord(pos,int(pushData.data.y));
+    ivec3 center = ivec3(round(gridCoord));
+
+    float w_total = 0;
+    const int NEIGHBOR_COUNT = 27;
+    ivec3 cells[NEIGHBOR_COUNT];
+    float weights[NEIGHBOR_COUNT];
+    int n = 0;
+    for(int i = -1; i < 2; i ++)
+    {
+        for(int j = -1; j < 2; j++)
+        {
+            for(int k = -1; k < 2; k++)
+            {
+                ivec3 cell = center + ivec3(i,j,k);
+                vec3 offset = abs(gridCoord - cell);
+                float w = compute_weight(offset.x) + compute_weight(offset.y)  + compute_weight(offset.z);
+                cells[n] = cell;
+                weights[n] = w;
+                w_total += w;
+                n++;
+            }
+        }
+    }
+
+    for(int i = 0 ; i < NEIGHBOR_COUNT; i++)
+    {
+        v.x = fma(weights[i],imageLoad(u_x, cells[i]).r,v.x);
+    }
+
+    for(int i = 0 ; i < NEIGHBOR_COUNT; i++)
+    {
+        v.y = fma(weights[i],imageLoad(u_y, cells[i]).r,v.y);
+    }
+
+    for(int i = 0 ; i < NEIGHBOR_COUNT; i++)
+    {
+        v.z = fma(weights[i],imageLoad(u_z, cells[i]).r,v.z);
+    }
+
+    v /= w_total;
+
+    // Do advection on particle
+    // Use semi-implicit Euler
+    float dt = pushData.data.x;
+    //v = particles.p[index].velocity.xyz;
+    vec3 position = particles.p[index].position.xyz + v * dt;
+    v.y +=  -9.8 * dt;
+    //position = clamp(position,vec3(-5.0),vec3(5.0));
+    
+    if(position.x <= -4.8 || position. x >= 4.8)
+    {
+        v.x *= -1;
+    }
+
+    if(position.y <= -4.8 || position. y >= 4.8)
+    {
+        v.y *= -1;
+    }
+
+    if(position.z <= -4.8 || position.z >= 4.8)
+    {
+        v.z *= -1;
+    }
+    //position += v * dt;
+    particles.p[index].position.xyz = position;
+    particles.p[index].velocity.xyz = v;
+}
